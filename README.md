@@ -34,7 +34,7 @@ Dual-branch finetuning framework was proposed by using an extra unlabeled branch
 
 ## 🚀 Checkpoint
 
-The pretrained models of HSIMAE are provided in [HSIMAE Models](https://drive.google.com/drive/folders/1Jln13zkwoHyG8gmykc17kMDXfvgSkiVC).
+The pretrained models of HSIMAE are provided in [Hugging Face](https://huggingface.co/RyanWy/HSIMAE).
 
 ## 🧐 Dataset
 
