@@ -144,7 +144,6 @@ class ViT(nn.Module):
         patch_dim = image_size ** 2 * near_band
 
         self.pos_embedding = nn.Parameter(torch.randn(1, num_patches + 1, dim))
-        # self.patch_to_embedding = nn.Linear(patch_dim, dim)
         self.patch_to_embedding = GSE_Embedding(image_size ** 2, dim, near_band)  # using 1D conv for group-wise embedding (GSE)
         self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
 
@@ -160,10 +159,8 @@ class ViT(nn.Module):
         )
 
     def forward(self, x, mask=None):
-        # patchs[batch, patch_num, patch_size*patch_size*c]  [batch,200,145*145]
         x = rearrange(x, 'b c h w -> b c (h w)')
 
-        ## embedding every patch vector to embedding size: [batch, patch_num, embedding_size]
         x = self.patch_to_embedding(x)  # [b,n,dim]
         b, n, _ = x.shape
 

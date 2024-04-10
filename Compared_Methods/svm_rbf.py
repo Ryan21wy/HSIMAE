@@ -9,7 +9,7 @@ from sklearn import metrics
 from sklearn.svm import SVC
 from sklearn.model_selection import GridSearchCV
 import matplotlib.image as mi
-from Compared_Model_Test import get_data_path, data_trans, get_data_set, label_to_colormap, spilt_dataset
+from Compared_Experiment import get_data_path, data_trans, get_data_set, label_to_colormap, spilt_dataset
 
 
 def seed_everything(seed):
@@ -17,9 +17,10 @@ def seed_everything(seed):
 
 
 class svm_rbf():
-    def __init__(self):
+    def __init__(self, seed=42):
         self.name = 'SVM_RBF'
         self.best_est = None
+        self.seed = seed
 
     def parameter_selection(self, trainx, trainy, para_c, para_g, training_ratio=0.5):
         parameters = itertools.product(para_c, para_g)
@@ -28,7 +29,7 @@ class svm_rbf():
         best_g = 0
         best_metric = 0
         for para in parameters:
-            svm = SVC(C=para[0], gamma=para[1], kernel='rbf')
+            svm = SVC(C=para[0], gamma=para[1], kernel='rbf', random_state=self.seed)
             svm.fit(np.array(train_data), train_gt)
             pred = svm.predict(np.array(val_data))
 
@@ -44,7 +45,7 @@ class svm_rbf():
         svm.fit(np.array(train_data), train_gt)
         return svm, best_c, best_g
 
-    def train(self, trainx, trainy, seed=42):
+    def train(self, trainx, trainy):
         cost = []
         gamma = []
         for i in range(-3, 10, 2):
@@ -94,16 +95,16 @@ class svm_rbf():
 
 seeds = [3407, 3408, 3409, 3410, 3411]
 
-dataset = 'Houston2013'
+dataset = 'Salinas'
 data_path, gt_path = get_data_path(dataset)
 
-save_path = r'D:\dataset\HSIMAE\results\compared_results/' + dataset
+save_path = r'D:\results\compared_results/' + '/' + dataset
 if not os.path.exists(save_path):
     os.makedirs(save_path)
 
 HSI_data = data_trans(data_path, norm=(1, 0))
 
-label_num = [20, 40, 60, 80]
+label_num = [10, 20, 30, 40]
 
 for l_num in label_num:
     test_results = []
@@ -115,15 +116,14 @@ for l_num in label_num:
                                                                       gt_path,
                                                                       patch_size=1,
                                                                       num=l_num,)
-                                                                      # mask=r"D:\dataset\HSIMAE\Dataset\WHU-Hi-LongKou\Train100.npy")
 
-        SVM = svm_rbf()
+        SVM = svm_rbf(seed=seeds[i])
 
         train_x = np.array(train_set).squeeze()
-        SVM.train(train_x, train_gt, seed=seeds[i])
+        SVM.train(train_x, train_gt)
 
         testx = np.array(test_set).squeeze()
-        oa, aa, kappa, ca = SVM.test(testx, test_gt, all_gt)
+        oa, aa, kappa, ca = SVM.test(testx, test_gt, all_gt, save_path)
 
         test_results.append([oa, aa, kappa])
         print(test_results)
@@ -136,13 +136,12 @@ for l_num in label_num:
     class_accuracy_mean = np.mean(test_results_per_class, axis=0) * 100
     class_accuracy_std = np.std(test_results_per_class, axis=0) * 100
 
-
     print('parameter is: ')
     print(l_num)
 
-    # print('class_accuracy:')
-    # for ca in class_accuracy_mean:
-    #     print(np.around(ca, 2))
+    print('class_accuracy:')
+    for ca in class_accuracy_mean:
+        print(np.around(ca, 2))
 
     print('test oa, aa, kappa:')
     for tm in test_mean:

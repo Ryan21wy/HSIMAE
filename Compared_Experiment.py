@@ -1,11 +1,9 @@
 import math
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.utils.data as data
-from torchvision.transforms import transforms as T
 from torch.utils.data import DataLoader
-from torch.optim import AdamW, RMSprop
+from torch.optim import AdamW, RMSprop, Adam
 
 import os
 import matplotlib.pyplot as plt
@@ -22,7 +20,7 @@ from sklearn.decomposition import PCA
 
 from scipy import ndimage
 
-from Utils.Preprocessing import splitHSI, get_data_set, spilt_dataset
+from Utils.Preprocessing import get_data_set, spilt_dataset
 from Utils.Label_to_Colormap import label_to_colormap
 from Utils.Seed_Everything import seed_everything, stable
 
@@ -31,12 +29,12 @@ warnings.filterwarnings('ignore')
 
 from Compared_Methods.SSFTT import SSFTTnet
 from Compared_Methods.SpectralFormer import ViT
-from Compared_Methods.HiT import HiT
 from Compared_Methods.DBDA import DBDA
-from Compared_Methods.RSSAN import RSSAN
-from Compared_Methods.FDSSC import FDSSC
+from Compared_Methods.FDSSC import FDSSC_f as FDSSC
 from Compared_Methods.SSRN import SSRN
 from Compared_Methods.HybridFormer import HybridFormer
+from Compared_Methods.GSCViT import GSCViT
+from Compared_Methods.DCTN import DCTN
 
 
 class HSIdataset(data.Dataset):
@@ -76,15 +74,22 @@ class HSIdataset(data.Dataset):
         return len(self.data_cubes)
 
 
-def data_trans(data_path, pca_nc=None, whiten=False, norm=None, resize=None):
+def data_trans(data_path, pca_nc=None, whiten=False, norm=None, center=False, resize=None):
     HSI_data_raw = np.load(data_path)
     if pca_nc is not None:
         data = applyPCA(HSI_data_raw, pca_nc, whiten=whiten)
     else:
         data = HSI_data_raw
+
     if norm is not None:
         data = (data - data.min()) / (data.max() - data.min())
         data = data * (norm[0] - norm[1]) + norm[1]
+
+    if center:
+        mean_by_c = np.mean(data, axis=(0, 1))
+        for c in range(data.shape[-1]):
+            data[:, :, c] = data[:, :, c] - mean_by_c[c]
+
     if resize is not None:
         h, w, c = resize
         data = ndimage.zoom(data, (h, w, c) / np.array(data.shape))
@@ -134,29 +139,28 @@ def training(data_list, gt, model, save_path, model_name, lr=1e-3, wd=0., bs=64,
         os.makedirs(save_path)
 
     train_dataload = DataLoader(train_dataset, batch_size=bs, shuffle=True, num_workers=0)
-    val_dataload = DataLoader(val_dataset, batch_size=256, shuffle=False, num_workers=0)
+    val_dataload = DataLoader(val_dataset, batch_size=512, shuffle=False, num_workers=0)
     print('batch load finished')
     print('训练轮次：' + str(len(train_dataload)))
 
-    # optimizer = AdamW(model.parameters(), lr=lr, weight_decay=wd)
+    optimizer = AdamW(model.parameters(), lr=lr, weight_decay=wd)
 
-    optimizer = RMSprop(model.parameters(), lr=lr, weight_decay=wd, momentum=0.9)
+    # optimizer = RMSprop(model.parameters(), lr=lr, weight_decay=wd, momentum=0.9)
 
-    # scheduler = CosineLRScheduler(optimizer, t_initial=epochs, lr_min=1e-5, warmup_t=int(np.ceil(0.1 * epochs)), warmup_lr_init=1e-6)
+    # scheduler = CosineLRScheduler(optimizer, t_initial=epochs, lr_min=lr * 0.01, warmup_t=int(np.ceil(0.1 * epochs)), warmup_lr_init=lr * 0.01)
 
-    # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=epochs // 10, gamma=0.9)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=epochs // 10, gamma=0.9)
 
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=10)
+    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=10)
 
     criterion = torch.nn.CrossEntropyLoss(reduction='mean', ignore_index=0)
 
-    early_stop = EarlyStopping(50, delta=0)
+    early_stop = EarlyStopping(30, delta=0)
 
     epoch_loss_list = []
     val_loss_list = []
     epoch_AA_list = []
     val_AA_list = []
-    grad_norms = []
     iter_num = 0
 
     fig = plt.figure()
@@ -245,7 +249,10 @@ def training(data_list, gt, model, save_path, model_name, lr=1e-3, wd=0., bs=64,
             early_stop(val_aa, val_value, model, os.path.join(save_path, model_name))
             if early_stop.early_stop:
                 break
-        scheduler.step(val_aa)
+
+        # scheduler.step(vloss)
+        scheduler.step(epoch)
+
     if (epoch + 1) == epochs:
         torch.save(model.state_dict(), os.path.join(save_path, model_name))
 
@@ -275,10 +282,9 @@ def test_model(data_cubes, test_gt, gt, model, model_path, save_path=None):
     model.load_state_dict(torch.load(model_path))
     model.eval()
 
-    test_dataload = DataLoader(dataset, batch_size=256, shuffle=False, num_workers=0)
+    test_dataload = DataLoader(dataset, batch_size=512, shuffle=False, num_workers=0)
 
     pred = np.zeros(1)
-    latents = np.zeros((1, 64 * 7))
     with torch.no_grad():
         for x in tqdm(test_dataload):
             inputs = x.to(device)
@@ -360,7 +366,7 @@ def get_model(model_name, dataset):
             model = HybridFormer(image_size=15, patch_size=(3, 5), num_classes=10, dim=100, depth=2, heads=4,
                                  mlp_dim=2048, channels=270, dropout=0.2, emb_dropout=0.2)
 
-    if model_name == 'SSFTT':
+    elif model_name == 'SSFTT':
         if dataset == 'Salinas':
             model = SSFTTnet(1, 17, kennel_3D=8, kennel_2D=64, num_tokens=4, dim=64, heads=4)
         elif dataset == 'PaviaU':
@@ -370,17 +376,7 @@ def get_model(model_name, dataset):
         elif dataset == 'LongKou':
             model = SSFTTnet(1, 10, kennel_3D=8, kennel_2D=64, num_tokens=4, dim=64, heads=4)
 
-    elif model_name == 'HiT':
-        if dataset == 'Salinas':
-            model = HiT(img_size=15, in_chans=204, num_classes=17, embed_dims=[408, 408, 512, 512])
-        elif dataset == 'PaviaU':
-            model = HiT(img_size=15, in_chans=103, num_classes=10, embed_dims=[208, 208, 512, 512])
-        elif dataset == 'Houston2013':
-            model = HiT(img_size=15, in_chans=144, num_classes=16, embed_dims=[288, 288, 512, 512])
-        elif dataset == 'LongKou':
-            model = HiT(img_size=15, in_chans=270, num_classes=10, embed_dims=[544, 544, 512, 512])
-
-    elif model_name == 'SF':
+    elif model_name == 'SpectralFormer':
         if dataset == 'Salinas':
             model = ViT(7, 3, 204, 17, dim=64, depth=5, heads=4, mlp_dim=8, dropout=0.1, emb_dropout=0.1, mode='CAF')
         elif dataset == 'PaviaU':
@@ -389,17 +385,6 @@ def get_model(model_name, dataset):
             model = ViT(7, 3, 144, 16, dim=64, depth=5, heads=4, mlp_dim=8, dropout=0.1, emb_dropout=0.1, mode='CAF')
         elif dataset == 'LongKou':
             model = ViT(7, 3, 270, 10, dim=64, depth=5, heads=4, mlp_dim=8, dropout=0.1, emb_dropout=0.1, mode='CAF')
-
-    elif model_name == 'RSSAN':
-        # wd 1e-4, epoch 200
-        if dataset == 'Salinas':
-            model = RSSAN(17, 204, 3, 16)
-        elif dataset == 'PaviaU':
-            model = RSSAN(10, 103, 3, 16)
-        elif dataset == 'Houston2013':
-            model = RSSAN(16, 144, 3, 16)
-        elif dataset == 'LongKou':
-            model = RSSAN(10, 270, 3, 16)
 
     elif model_name == 'DBDA':
         if dataset == 'Salinas':
@@ -431,19 +416,126 @@ def get_model(model_name, dataset):
         elif dataset == 'LongKou':
             model = SSRN(270, 10)
 
+    elif model_name == 'GSC-ViT':
+        if dataset == 'Salinas':
+            model = GSCViT(num_classes=17, channels=204, heads=(1, 1, 1), depth=(1, 1, 1), group_spatial_size=[4, 4, 4],
+                           dropout=0.1, padding=[1, 1, 1], dims=(256, 128, 64), num_groups=[16, 16, 16])
+        elif dataset == 'PaviaU':
+            model = GSCViT(num_classes=10, channels=103, heads=(1, 1, 1), depth=(1, 1, 1), group_spatial_size=[4, 4, 4],
+                           dropout=0.1, padding=[1, 1, 1], dims=(256, 128, 64), num_groups=[16, 16, 16])
+        elif dataset == 'Houston2013':
+            model = GSCViT(num_classes=16, channels=144, heads=(1, 1, 1), depth=(1, 1, 1), group_spatial_size=[4, 4, 4],
+                           dropout=0.1, padding=[1, 1, 1], dims=(256, 128, 64), num_groups=[16, 16, 16])
+        elif dataset == 'LongKou':
+            model = GSCViT(num_classes=10, channels=270, heads=(4, 4, 4), depth=(1, 1, 1), group_spatial_size=[4, 4, 4],
+                           dropout=0.1, padding=[1, 1, 1], dims=(256, 128, 64), num_groups=[16, 16, 16])
+
+    elif model_name == 'DCTN':
+        if dataset == 'Salinas':
+            model = DCTN([2, 2, 5, 3], img_size=9, in_chans=204, num_classes=17, embed_dims=[440, 440, 512, 512],
+                         patch_size=3, transitions=[False, True, False, False], segment_dim=[8, 8, 4, 4],
+                         mlp_ratios=[3, 3, 3, 3], dateset='Salinas')
+        elif dataset == 'PaviaU':
+            model = DCTN([2, 2, 5, 3], img_size=5, in_chans=103, num_classes=10, embed_dims=[320, 320, 512, 512],
+                         patch_size=3, transitions=[False, True, False, False], segment_dim=[8, 8, 4, 4],
+                         mlp_ratios=[3, 3, 3, 3], dateset='PaviaU')
+        elif dataset == 'Houston2013':
+            model = DCTN([2, 2, 5, 3], img_size=15, in_chans=144, num_classes=16, embed_dims=[320, 320, 512, 512],
+                         patch_size=3, transitions=[False, True, False, False], segment_dim=[8, 8, 4, 4],
+                         mlp_ratios=[3, 3, 3, 3], dateset='Houston2013')
+        elif dataset == 'LongKou':
+            model = DCTN([2, 2, 5, 3], img_size=15, in_chans=270, num_classes=10, embed_dims=[320, 320, 512, 512],
+                         patch_size=3, transitions=[False, True, False, False], segment_dim=[8, 8, 4, 4],
+                         mlp_ratios=[3, 3, 3, 3], dateset='LongKou')
+
     return model
+
+
+def model_config(model_name, lr):
+    if model_name == 'HybridFormer':
+        patch_size = [15, 15, 15, 15]
+        optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.)
+        scheduler = None
+        epoch = 200
+        early_stop = False
+        norm = (1, 0)
+
+    elif model_name == 'GSC-ViT':
+        patch_size = [8, 8, 8, 8]
+        optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.05)
+        scheduler = None
+        epoch = 200
+        early_stop = False
+        norm = (1, 0)
+        center = True
+
+    if model_name == 'DCTN':
+        patch_size = [15, 15, 15, 15]
+        optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.)
+        epoch = 200
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.1, patience=epoch // 4)
+        early_stop = False
+        norm = (1, 0)
+
+    elif model_name == 'SSFTT':
+        patch_size = [13, 13, 9, 13]
+        optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.)
+        scheduler = None
+        epoch = 200
+        early_stop = False
+        pca_nc = 30
+        whiten = True
+
+    elif model_name == 'SSRN':
+        patch_size = [9, 9, 9, 9]
+        optimizer = RMSprop(model.parameters(), lr=lr, weight_decay=0., momentum=0.9)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=10)
+        epoch = 200
+        early_stop = False
+        norm = (1, 0)
+
+    elif model_name == 'FDSSC':
+        patch_size = [9, 9, 9, 9]
+        optimizer = RMSprop(model.parameters(), lr=lr, weight_decay=0., momentum=0.9)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=10)
+        epoch = 400
+        early_stop = True
+        norm = (1, 0)
+
+    elif model_name == 'DBDA':
+        patch_size = [9, 9, 9, 9]
+        optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.)
+        scheduler = CosineLRScheduler(optimizer, t_initial=epochs, lr_min=lr * 0.01, warmup_t=int(np.ceil(0.1 * epochs)), warmup_lr_init=lr * 0.01)
+        epoch = 200
+        early_stop = True
+        norm = (1, 0)
+
+    elif model_name == 'SpectralFormer':
+        patch_size = [7, 7, 7, 7]
+        optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.005)
+        epoch = 1000
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=epoch // 10, gamma=0.9)
+        early_stop = False
+        norm = (1, 0)
 
 
 if __name__ == "__main__":
     seeds = [3407, 3408, 3409, 3410, 3411]
     seed_everything(seeds[0])
 
-    datasets = ['Salinas']
-    model_ = 'SSRN'
+    datasets = ['Salinas', 'PaviaU', 'Houston2013', 'LongKou']
+    model_ = 'SpectralFormer'
 
-    label_nums = [100]
-    patch_sizes = [9, 9, 9, 9]
+    label_nums = [40, 30, 20, 10]
+    batch_sizes = [32, 32, 16, 16]
+
+    patch_sizes = [7, 7, 7, 7]
     results = [[], [], [], []]
+
+    lrs = [1e-3, 5e-4, 1e-4, 5e-5]
+
+    wd = 0.005
+    epochs = 1000
 
     for k, dataset in enumerate(datasets):
         print('current dataset: ', dataset)
@@ -459,31 +551,25 @@ if __name__ == "__main__":
         HSI_data = data_trans(data_path, norm=(1, 0))
         # HSI_data = data_trans(data_path, pca_nc=30, whiten=True)
 
-        wd = 0
-        bs = 16
-        epochs = 200
+        for j, l_num in enumerate(label_nums):
+            bs = batch_sizes[j]
 
-        for l_num in label_nums:
-
-            seed_everything(seeds[0])
-            train_set, train_gt, test_set, test_gt, all_gt = get_data_set(HSI_data,
-                                                                          gt_path,
-                                                                          patch_size=patch_sizes[k],
-                                                                          num=l_num,)
-                                                                          # mask=r"D:\dataset\HSIMAE\Dataset\WHU-Hi-LongKou\Train100.npy")
-
-            lrs = [1e-3, 5e-4, 1e-4, 5e-5]
             best_score = []
-
             for lr in lrs:
                 val_results = []
 
                 for i in range(3):
                     seed_everything(seeds[i])
+
+                    train_set, train_gt, test_set, test_gt, all_gt = get_data_set(HSI_data,
+                                                                                  gt_path,
+                                                                                  patch_size=patch_sizes[k],
+                                                                                  num=l_num, )
+
                     model = get_model(model_, dataset)
 
                     _, [oa, aa, kappa], train_loss, val_loss = training(train_set, train_gt, model, save_path_1, model_name,
-                                                                        lr=lr, wd=wd, bs=bs, epochs=epochs, early_stopping=True)
+                                                                        lr=lr, wd=wd, bs=bs, epochs=epochs, early_stopping=False)
                     val_results.append([oa, aa, kappa])
 
                 val_results = np.array(val_results)
@@ -504,10 +590,16 @@ if __name__ == "__main__":
 
             for i in range(5):
                 seed_everything(seeds[i])
+
+                train_set, train_gt, test_set, test_gt, all_gt = get_data_set(HSI_data,
+                                                                              gt_path,
+                                                                              patch_size=patch_sizes[k],
+                                                                              num=l_num,)
+
                 model = get_model(model_, dataset)
 
                 _, [oa, aa, kappa], train_loss, val_loss = training(train_set, train_gt, model, save_path_1, model_name,
-                                                                    lr=lr, wd=wd, bs=bs, epochs=epochs, early_stopping=True)
+                                                                    lr=lr, wd=wd, bs=bs, epochs=epochs, early_stopping=False)
 
                 oa, aa, kappa, ca = test_model(test_set, test_gt, all_gt, model, os.path.join(save_path_1, model_name), save_path)
 
@@ -522,6 +614,7 @@ if __name__ == "__main__":
             class_accuracy_std = np.std(test_results_per_class, axis=0) * 100
 
             results[k].append([lr, class_accuracy_mean, test_mean, test_std])
+            print(test_mean)
 
     for i, result in enumerate(results):
         print('current dataset: ', datasets[i])
@@ -533,7 +626,7 @@ if __name__ == "__main__":
             print(r[0])
 
             print('class_accuracy:')
-            for ca in class_accuracy_mean:
+            for ca in r[1]:
                 print(np.around(ca, 2))
 
             print('test oa, aa, kappa:')
