@@ -11,7 +11,7 @@ import random
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 
-from Models import DualHSIMAE, HSIViT
+from Models import DualViT, HSIViT
 from Utils.Preprocessing import get_data_set_dual, spilt_dataset
 from Utils.Label_to_Colormap import label_to_colormap
 from Utils.Seed_Everything import seed_everything, stable
@@ -26,26 +26,8 @@ warnings.filterwarnings('ignore')
 
 
 class HSIdataset(data.Dataset):
-    def __init__(self, data_cubes, gt=None, train=False, device='cuda:0'):
-        self.data_cubes = data_cubes
-        self.gt = gt
-        self.train = train
-        self.device = device
-
-    def __getitem__(self, index):
-        data = self.data_cubes[index]
-        data = torch.tensor(data.copy(), dtype=torch.float32)
-        data = data.unsqueeze(0).permute(0, 3, 1, 2)
-        return data
-
-    def __len__(self):
-        return len(self.data_cubes)
-
-
-class HSIdataset_dual(data.Dataset):
-    def __init__(self, data, index_list, gt=None, train=False, device='cuda:0'):
-        self.data = data
-        self.index_list = index_list
+    def __init__(self, data_list, gt=None, train=False, device='cuda:0'):
+        self.data_list = data_list
         self.gt = gt
 
         self.train = train
@@ -64,8 +46,7 @@ class HSIdataset_dual(data.Dataset):
             return data
 
     def __getitem__(self, index):
-        data_index = self.index_list[index]
-        data = self.data[data_index]
+        data = self.data_list[index]
         if self.train:
             data = self.random_horizontal_filp(data)
             data = self.random_vertical_filp(data)
@@ -79,12 +60,12 @@ class HSIdataset_dual(data.Dataset):
             return data
 
     def __len__(self):
-        return len(self.index_list)
+        return len(self.data_list)
 
 
-def dual_branch_finetuning(data_list, labeled_index, unlabeled_index, gt, save_dir, model_name, pretrained=None,
-                           lr=1e-3, wd=5e-3, epochs=100, bs=64, depth=12, dim=144, dec_depth=2, dec_dim=72,
-                           mask_ratio=0.5, ul_multi=8, lamda=5):
+def dual_branch_finetuning(data_list, labeled_index, unlabeled_data, gt, save_dir, model_name, pretrained=None,
+                           lr=1e-3, wd=5e-3, depth=12, dim=144, dec_depth=2, dec_dim=72, s_depth=6,
+                           epochs=100, mask_ratio=0.5, lamda=5, batch_size=32):
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     h, w, c = data_list[0].shape
@@ -92,19 +73,10 @@ def dual_branch_finetuning(data_list, labeled_index, unlabeled_index, gt, save_d
     n_class = np.max(gt) + 1
     print('number of class: ', n_class)
 
-    train_data_index, train_gt, val_data_index, val_gt = spilt_dataset(labeled_index, gt, training_ratio=0.5)
-
-    train_labeled_dataset = HSIdataset_dual(data_list, train_data_index, train_gt, train=True)
-    train_unlabeled_dataset = HSIdataset_dual(data_list, unlabeled_index, train=True)
-    val_labeled_dataset = HSIdataset_dual(data_list, val_data_index, val_gt)
-    print('dataset load finished')
-    print('训练集大小：' + str(len(train_labeled_dataset)))
-
-    model = DualHSIMAE(img_size=h, patch_size=3, in_chans=1, bands=c, b_patch_size=16, num_class=n_class,
-                       ul_multi=ul_multi, embed_dim=dim, depth=depth, num_heads=dim // 16,
-                       decoder_embed_dim=dec_dim, decoder_depth=dec_depth, decoder_num_heads=dec_dim // 8,
-                       norm_pix_loss=True, trunc_init=True, sep_pos_embed=True, use_learnable_pos_emb=True,
-                       cls_embed=False).to(device)
+    model = DualViT(img_size=h, patch_size=3, in_chans=1, bands=c, b_patch_size=8, num_class=n_class,
+                    embed_dim=dim, depth=depth, num_heads=dim // 16, s_depth=s_depth,
+                    decoder_embed_dim=dec_dim, decoder_depth=dec_depth, decoder_num_heads=dec_dim // 8,
+                    norm_pix_loss=True, trunc_init=True, drop_path=0.2).to(device)
 
     save_path = os.path.join(save_dir, model_name.replace('.pkl', ''))
     if not os.path.exists(save_path):
@@ -123,27 +95,33 @@ def dual_branch_finetuning(data_list, labeled_index, unlabeled_index, gt, save_d
         model_dict.update(state_dict)
         model.load_state_dict(model_dict)
 
-    epoch_total = epochs
-    warm_up_epoch = int(np.ceil(0.1 * epoch_total))
-
-    train_labeled_dataload = DataLoader(train_labeled_dataset, batch_size=bs, shuffle=True)
-    if ul_multi > 1:
-        train_unlabeled_dataload = DataLoader(train_unlabeled_dataset, batch_size=bs * (ul_multi - 1), shuffle=True)
-    val_labeled_dataload = DataLoader(val_labeled_dataset, batch_size=512, shuffle=False)
-    print('batch load finished')
-    print('训练轮次：' + str(len(train_labeled_dataload)))
-
     no_decay = ['bias', 'norm']
     optimizer_grouped_parameters = [
         {'params': [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)], 'weight_decay': wd},
         {'params': [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
     ]
-
     optimizer = AdamW(optimizer_grouped_parameters, lr=lr, weight_decay=wd)
 
-    scheduler = CosineLRScheduler(optimizer, t_initial=epoch_total, lr_min=1e-5, warmup_t=warm_up_epoch, warmup_lr_init=1e-6)
+    warm_up_epoch = int(np.ceil(0.1 * epochs))
+    scheduler = CosineLRScheduler(optimizer, t_initial=epochs, lr_min=lr * 0.01, warmup_t=warm_up_epoch,
+                                  warmup_lr_init=lr * 0.01)
 
     criterion = torch.nn.CrossEntropyLoss(reduction='mean', ignore_index=0)
+
+    train_data_index, train_gt, val_data_index, val_gt = spilt_dataset(labeled_index, gt, training_ratio=0.5)
+
+    train_labeled_dataset = HSIdataset(data_list[train_data_index], train_gt, train=True)
+    unlabeled_dataset = HSIdataset(unlabeled_data, train=True)
+    val_labeled_dataset = HSIdataset(data_list[val_data_index], val_gt)
+    print('dataset load finished')
+    print('训练集大小：' + str(len(train_labeled_dataset)))
+
+    train_labeled_dataload = DataLoader(train_labeled_dataset, batch_size=batch_size, shuffle=True)
+    unlabeled_batch_size = int(np.ceil(len(unlabeled_dataset) / len(train_labeled_dataload)) / 2)
+    unlabeled_dataload = DataLoader(unlabeled_dataset, batch_size=unlabeled_batch_size, shuffle=True)
+    val_labeled_dataload = DataLoader(val_labeled_dataset, batch_size=512, shuffle=False)
+    print('batch load finished')
+    print('训练轮次：' + str(len(train_labeled_dataload)))
 
     epoch_loss_list = []
     val_loss_list = []
@@ -158,27 +136,19 @@ def dual_branch_finetuning(data_list, labeled_index, unlabeled_index, gt, save_d
     ax2 = ax1.twinx()
     ax2.set_ylabel('Avarage Accuracy')
 
-    if not os.path.exists(save_path + '/train_set'):
-        os.makedirs(save_path + '/train_set')
-    if not os.path.exists(save_path + '/val_set'):
-        os.makedirs(save_path + '/val_set')
-
-    for epoch in tqdm(range(epoch_total)):
+    for epoch in tqdm(range(epochs)):
         train_loss = 0
         model.train()
         pred = np.zeros(1)
         gt_ = np.zeros(1)
         labeled_iter = iter(stable(train_labeled_dataload, 42 + epoch))
-        if ul_multi > 1:
-            unlabeled_iter = iter(stable(train_unlabeled_dataload, 42 + epoch))
+        unlabeled_iter = iter(stable(unlabeled_dataload, 42 + epoch))
 
         for batch_idx in range(len(train_labeled_dataload)):
             x, y = labeled_iter.next()
-            if ul_multi > 1:
-                x_u = unlabeled_iter.next()
-                loss_rec, _, _, outputs = model(x.to(device), x_u.to(device), mask_ratio=mask_ratio)
-            else:
-                loss_rec, _, _, outputs = model(x.to(device), mask_ratio=mask_ratio)
+            x_u = unlabeled_iter.next()
+            loss_rec, _, _, outputs = model(x.to(device), x_u.to(device), mask_ratio=mask_ratio)
+
             targets = y.long().to(device)
             loss_cls = criterion(outputs, targets)
             loss = lamda * loss_rec + loss_cls
@@ -220,7 +190,7 @@ def dual_branch_finetuning(data_list, labeled_index, unlabeled_index, gt, save_d
             labeled_iter = iter(stable(val_labeled_dataload, 42 + epoch))
             for batch_idx in range(len(val_labeled_dataload)):
                 x, y = labeled_iter.next()
-                _, _, _, outputs = model(x.to(device), mask_ratio=mask_ratio)
+                outputs = model(x.to(device), mask_ratio=mask_ratio)
                 targets = y.long().to(device)
                 loss = criterion(outputs, targets)
 
@@ -250,7 +220,7 @@ def dual_branch_finetuning(data_list, labeled_index, unlabeled_index, gt, save_d
         val_AA_list.append(val_aa)
         val_loss_list.append(vloss)
 
-        if (epoch + 1) == epoch_total:
+        if (epoch + 1) == epochs:
             ax1.cla()
             ax2.cla()
             ln1 = ax1.plot(epoch_loss_list, 'b', lw=1, label='train loss')
@@ -263,50 +233,40 @@ def dual_branch_finetuning(data_list, labeled_index, unlabeled_index, gt, save_d
             plt.pause(0.1)
         scheduler.step(epoch)
 
-    if (epoch + 1) == epoch_total:
-        torch.save(model.state_dict(), os.path.join(save_dir, model_name))
+    torch.save(model.state_dict(), os.path.join(save_dir, model_name))
 
     plt.savefig(save_path + '/finetune_loss_' + str(lr) + '.png')
     plt.close()
     return val_value, epoch_loss_list, val_loss_list
 
 
-def test_model(data_cubes, test_gt, gt, save_dir, model_name, depth=12, dim=96):
+def test_model(data_cubes, test_gt, gt, save_dir, model_name, depth=12, dim=96, s_depth=6):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     h, w, c = data_cubes[0].shape
     n_class = np.max(gt) + 1
 
-    dataset = HSIdataset(data_cubes)
+    model = HSIViT(img_size=h, patch_size=3, in_chans=1, bands=c, b_patch_size=8,
+                   num_class=n_class, embed_dim=dim, depth=depth, num_heads=dim // 16, s_depth=s_depth,
+                   sep_pos_embed=True, use_learnable_pos_emb=False).to(device)
 
-    model = HSIViT(img_size=h, patch_size=3, in_chans=1, bands=c, b_patch_size=16,
-                   num_class=n_class, embed_dim=dim, depth=depth, num_heads=dim // 16,
-                   sep_pos_embed=True, use_learnable_pos_emb=True, trunc_init=True,
-                   drop_rate=0., drop_path=0.2).to(device)
-
-    save_path = os.path.join(save_dir, model_name.replace('.pkl', ''))
-    if not os.path.exists(save_path):
-        os.makedirs(save_path)
-
-    ignore_keys = []
-    load_keys = []
     state_dict = {}
     model_dict = model.state_dict()
     pretrain_model_para = torch.load(os.path.join(save_dir, model_name), map_location=device)
     for key, v in pretrain_model_para.items():
         if key in model_dict.keys():
             state_dict[key] = v
-            load_keys.append(key)
-        else:
-            ignore_keys.append(key)
+
     model_dict.update(state_dict)
     model.load_state_dict(model_dict)
-
-    print(load_keys)
-    print(ignore_keys)
     model.eval()
 
+    dataset = HSIdataset(data_cubes)
     test_dataload = DataLoader(dataset, batch_size=256, shuffle=False, num_workers=0)
+
+    save_path = os.path.join(save_dir, model_name.replace('.pkl', ''))
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
 
     pred = np.zeros(1)
     with torch.no_grad():
@@ -341,76 +301,47 @@ def test_model(data_cubes, test_gt, gt, save_dir, model_name, depth=12, dim=96):
     return oa, aa, kappa, ca
 
 
-def get_metrics(predict_label, true_label, nclass):
-    confusion_matrix = metrics.confusion_matrix(true_label, predict_label)
-    overall_accuracy = metrics.accuracy_score(true_label, predict_label)
-
-    true_cla = np.zeros(nclass, dtype=np.int64)
-    for i in range(nclass):
-        true_cla[i] = confusion_matrix[i, i]
-    test_num_class = np.sum(confusion_matrix, 1)
-    test_num = np.sum(test_num_class)
-    num1 = np.sum(confusion_matrix, 0)
-    po = overall_accuracy
-    pe = np.sum(test_num_class * num1) / (test_num * test_num)
-    kappa = (po - pe) / (1 - pe) * 100
-    true_cla = np.true_divide(true_cla, test_num_class) * 100
-    average_accuracy = np.average(true_cla)
-    return overall_accuracy, average_accuracy, kappa
-
-
-def get_file_list(path):
-    file_list = []
-    for root, dirs, files in os.walk(path):
-        for file in files:
-            if 'max_min' not in file:
-                file_list.append(os.path.join(root, file))
-    return file_list
-
-
 if __name__ == "__main__":
     seeds = [3407, 3408, 3409, 3410, 3411]
 
-    lrs = [5e-3]
     wd = 5e-3
     epoch = 200
-    batch_size = 64
+    batch_size = 32
 
-    enc_paras = [12, 144]  # [12, 144] for HSIMAE-Base, [12, 256] for Large, [12 ,512] for Huge
-    dec_paras = [1, 72]
+    enc_paras = [12, 256, 9]  # [depth, dimension, spatial-spectral encoders depth], [12, 128, 9] for HSIMAE-Base, [12, 256, 9] for Large
+    dec_paras = [8, 64]  # [depth, dimension]
 
     mask_ratio = 0.8
-    lamda = 5
-    ul_multi = 8  # unlabeled data ratio
+    lamda = 10
 
     patch_size = 9
-    labeled_num = 100
+    labeled_num = 40
 
-    model_name = 'HSIMAE_B_semi.pkl'
+    model_name = 'HSIMAE_L.pkl'
 
-    pretrained_model = r"D:\HySpecNet-11k-pca-64\HSIMAE_B_m0.8_d12_dim144_dd1_ddim72_9x9_10e.pkl"
-    data_path = r'D:\Dataset\Salinas\data.npy'
-    gt_path = r'D:\Dataset\Salinas\gt.npy'
-    save_path = r'D:\results\Salinas'
+    pretrained_model = "model path"
+    data_path = "data path"  # numpy array, [h, w, Bands]
+    gt_path = "label path"  # numpy array, [h, w]
+    save_path = "save path"
 
     report_test_results = True
 
+    lrs = [5e-3, 1e-3, 5e-4, 1e-4]
     best_score = []
     for lr in lrs:
         val_results = []
 
-        seed_everything(seeds[0])
-        labeled_index, train_gt, unlabeled_index, data_set, test_gt, gt = get_data_set_dual(data_path,
-                                                                                            gt_path,
-                                                                                            patch_size=patch_size,
-                                                                                            num=labeled_num,
-                                                                                            norm=False)
-
         for i in range(3):
             seed_everything(seeds[i])
+            labeled_index, train_gt, unlabeled_data, data_set, test_gt, gt = get_data_set_dual(data_path,
+                                                                                               gt_path,
+                                                                                               patch_size=patch_size,
+                                                                                               num=labeled_num,
+                                                                                               norm=False)
+
             [oa, aa, kappa, ca], train_loss, val_loss = dual_branch_finetuning(data_set,
                                                                                labeled_index,
-                                                                               unlabeled_index,
+                                                                               unlabeled_data,
                                                                                train_gt,
                                                                                save_path,
                                                                                model_name,
@@ -418,13 +349,13 @@ if __name__ == "__main__":
                                                                                lr=lr,
                                                                                wd=wd,
                                                                                epochs=epoch,
-                                                                               bs=batch_size,
+                                                                               batch_size=batch_size,
                                                                                depth=enc_paras[0],
                                                                                dim=enc_paras[1],
+                                                                               s_depth=enc_paras[2],
                                                                                dec_depth=dec_paras[0],
                                                                                dec_dim=dec_paras[1],
                                                                                mask_ratio=mask_ratio,
-                                                                               ul_multi=ul_multi,
                                                                                lamda=lamda,
                                                                                )
 
@@ -448,10 +379,15 @@ if __name__ == "__main__":
         test_results_per_class = []
         for i in range(5):
             seed_everything(seeds[i])
+            labeled_index, train_gt, unlabeled_data, data_set, test_gt, gt = get_data_set_dual(data_path,
+                                                                                               gt_path,
+                                                                                               patch_size=patch_size,
+                                                                                               num=labeled_num,
+                                                                                               norm=False)
 
             [oa, aa, kappa, ca], train_loss, val_loss = dual_branch_finetuning(data_set,
                                                                                labeled_index,
-                                                                               unlabeled_index,
+                                                                               unlabeled_data,
                                                                                train_gt,
                                                                                save_path,
                                                                                model_name,
@@ -459,15 +395,16 @@ if __name__ == "__main__":
                                                                                lr=lr,
                                                                                wd=wd,
                                                                                epochs=epoch,
-                                                                               bs=batch_size,
+                                                                               batch_size=batch_size,
                                                                                depth=enc_paras[0],
                                                                                dim=enc_paras[1],
+                                                                               s_depth=enc_paras[2],
                                                                                dec_depth=dec_paras[0],
                                                                                dec_dim=dec_paras[1],
                                                                                mask_ratio=mask_ratio,
-                                                                               ul_multi=ul_multi,
                                                                                lamda=lamda,
                                                                                )
+
             oa, aa, kappa, ca = test_model(data_set,
                                            test_gt,
                                            gt,
@@ -475,6 +412,7 @@ if __name__ == "__main__":
                                            model_name,
                                            depth=enc_paras[0],
                                            dim=enc_paras[1],
+                                           s_depth=enc_paras[2],
                                            )
 
             test_results.append([oa, aa, kappa])
