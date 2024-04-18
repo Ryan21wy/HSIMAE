@@ -1,18 +1,18 @@
 ## HSIMAE：A Unified Masked Autoencoder with large-scale pretraining for Hyperspectral Image Classification
 
-![HSIMAE-2-3](https://github.com/Ryan21wy/HSIMAE/assets/81405754/d8a1177e-a587-40d8-bebb-b63113ae1122)
+![figure 2](https://github.com/Ryan21wy/HSIMAE/assets/81405754/d1a7e493-0390-45c2-8cdb-0c25fe771451)
 
-![HSIMAE-8-2](https://github.com/Ryan21wy/HSIMAE/assets/81405754/6d02fbf4-d15a-4887-9c6b-e717a5c0fc57)
+![figure 4](https://github.com/Ryan21wy/HSIMAE/assets/81405754/489bb410-0ada-44af-ab77-4d0626ed9669)
 
 ## ✨ Highlights
-### Masked HSI Modeling with Large-Scale Pretraining
-The HSIMAE was pretrained by a large-scale HSI dataset, named HyspecNet-11k, then directly finetuned on four target classification datasets.
+### Large-Scale and Diverse Dataset for HSI Pretraining
+A large and diverse HSI dataset named HSIHybrid was curated for large-scale HSI pre-training. It consisted of 15 HSI datasets from different hyperspectral sensors. After splitting into image patches, a total of **4 million** HSI patches with a spatial size of 9×9 were obtained.
 
-### Multi-Scale PCA for Features Extract
-To address these distributional shifts caused by the different spectral resolutions and spectral ranges between hyperspectral sensors, a MS-PCA was used to extract the multi-scale features of HSI spectra and transform the raw spectra into fixed-length features.
+### New MAE Architecture for HSI domain
+A modified MAE named HSIMAE that utilized separate spatial-spectral encoders followed by fusion blocks to learn spatial correlation and spectral correlation of HSI data was proposed.
 
 ### Dual-branch finetuning to leverage unlabeled data of target dataset
-Dual-branch finetuning framework was proposed by using an extra unlabeled branch to further adapted the model to the distributions of the target dataset and suppressed the overfitting issue.
+A dual-branch fine-tuning framework was introduced to leverage the unlabeled data of the downstream HSI dataset and suppressed overfitting on small training samples.
 
 ## 🔨 Installation
   
@@ -34,12 +34,11 @@ Dual-branch finetuning framework was proposed by using an extra unlabeled branch
 
 ## 🚀 Checkpoint
 
-The pretrained models of HSIMAE are provided in [Hugging Face](https://huggingface.co/RyanWy/HSIMAE).
+The pre-training dataset and pretrained models of HSIMAE are provided in [Hugging Face](https://huggingface.co/RyanWy/HSIMAE).
+
+Because it is too big, HySpecNet-11k need be downloaded from [HySpecNet-11k - A Large-Scale Hyperspectral Benchmark Dataset (rsim.berlin)](https://hyspecnet.rsim.berlin/)
 
 ## 🧐 Evaluation Results
-
-### Pretraining Dataset:
-HySpecNet-11k: [HySpecNet-11k - A Large-Scale Hyperspectral Benchmark Dataset (rsim.berlin)](https://hyspecnet.rsim.berlin/)
 
 ### Classification Dataset:
 Salinas: [Salinas scene](https://www.ehu.eus/ccwintco/index.php/Hyperspectral_Remote_Sensing_Scenes#Salinas_scene)
@@ -52,13 +51,14 @@ WHU-Hi-LongKou: [WHU-Hi: UAV-borne hyperspectral and high spatial resolution (H2
 
 ### Results
 
-Overall accuracy of four HSI classification datasets. The training set and validation set contained **50 random samples per class** , respectively, and the remaining samples were considered as the test set.
+Overall accuracy of four HSI classification datasets. The training set and validation set contained **5/10/15/20 random samples per class** , respectively, and the remaining samples were considered as the test set.
 
-|Model|Size|Salinas|Pavia University|Houston 2013|WHU-Hi-LongKou|Average|
-|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-|HSIMAE-B|12.5M|94.20|**91.90**|92.21|98.15|94.12|
-|HSIMAE-L|38.5M|94.39|91.28|92.66|**98.22**|94.14|
-|HSIMAE-H|152M|**94.41**|91.43|**92.99**|98.02|**94.21**|
+|Training Samples|Salinas|Pavia University|Houston 2013|WHU-Hi-LongKou|Average|
+|:---:|:---:|:---:|:---:|:---:|:---:|
+|5|92.99|87.00|83.89|96.16|90.01|
+|10|95.14|96.02|90.14|97.64|94.74|
+|15|96.51|97.09|94.52|98.08|96.55|
+|20|96.62|97.44|95.65|98.41|97.03|
 
 ## 🧑‍💻 Contact
 
