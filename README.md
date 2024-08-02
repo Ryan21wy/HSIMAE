@@ -1,4 +1,4 @@
-## HSIMAE：A Unified Masked Autoencoder with large-scale pretraining for Hyperspectral Image Classification
+## HSIMAE：A Unified Masked Autoencoder with Large-scale Pretraining for Hyperspectral Image Classification
 
 ![figure 2](https://github.com/Ryan21wy/HSIMAE/assets/81405754/d1a7e493-0390-45c2-8cdb-0c25fe771451)
 
@@ -6,7 +6,9 @@
 
 ## ✨ Highlights
 ### Large-Scale and Diverse Dataset for HSI Pretraining
-A large and diverse HSI dataset named HSIHybrid was curated for large-scale HSI pre-training. It consisted of 15 HSI datasets from different hyperspectral sensors. After splitting into image patches, a total of **4 million** HSI patches with a spatial size of 9×9 were obtained.
+A large and diverse HSI dataset named HSIHybrid was curated for large-scale HSI pre-training. It consisted of 15 HSI datasets from different hyperspectral sensors. After splitting into image patches, a total of **4 million** HSI patches with a spatial size of 9×9 were obtained. 
+
+A group-wise PCA was used to extract features of HSI spectra and transform the raw spectra to fixed-length features.
 
 ### New MAE Architecture for HSI domain
 A modified MAE named HSIMAE that utilized separate spatial-spectral encoders followed by fusion blocks to learn spatial correlation and spectral correlation of HSI data was proposed.
@@ -59,6 +61,20 @@ Overall accuracy of four HSI classification datasets. The training set and valid
 |10|95.14|96.02|90.14|97.64|94.74|
 |15|96.51|97.09|94.52|98.08|96.55|
 |20|96.62|97.44|95.65|98.41|97.03|
+
+## ✏️ Citation
+
+If you think this project is helpful, please feel free to leave a star⭐️ and cite our paper:
+
+```
+@ARTICLE{10607879,
+  author={Wang, Yue and Wen, Ming and Zhang, Hailiang and Sun, Jinyu and Yang, Qiong and Zhang, Zhimin and Lu, Hongmei},
+  journal={IEEE Journal of Selected Topics in Applied Earth Observations and Remote Sensing}, 
+  title={HSIMAE: A Unified Masked Autoencoder with Large-scale Pre-training for Hyperspectral Image Classification}, 
+  year={2024},
+  doi={10.1109/JSTARS.2024.3432743}
+}
+```
 
 ## 🧑‍💻 Contact
 
